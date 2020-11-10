@@ -1,0 +1,124 @@
+---
+title: "Airway: Read mapping and count table"
+author: "Eline Van Garsse"
+output:
+    html_document:
+      code_download: true
+      theme: cosmo
+      toc: true
+      toc_float: true
+      highlight: tango
+      number_sections: true
+---
+
+# Background
+The data used in this workflow comes from an RNA-seq experiment where airway smooth muscle cells were treated with dexamethasone, a synthetic glucocorticoid steroid with anti-inflammatory effects (Himes et al. 2014). Glucocorticoids are used, for example, by people with asthma to reduce inflammation of the airways. In the experiment, four human airway smooth muscle cell lines were treated with 1 micromolar dexamethasone for 18 hours. For each of the four cell lines, we have a treated and an untreated sample.
+For more description of the experiment see the article, PubMed entry 24926665, and for raw data see the GEO entry GSE52778.
+
+# Data
+FastQ files with a small subset of the reads can be found on https://github.com/statOmics/SGA2019/tree/data-rnaseq
+
+```{r}
+library(tidyverse)
+library(Rsubread)
+library("GEOquery")
+```
+
+We will use the Rsubread read mapper because that is available in R for all platforms (Linux, Windows and Mac).
+For real projects I prefer the use of STAR.
+
+# Get info on experiment
+
+## Get info on samples
+Get all info from GEO.
+get sample info via getGEO (info from samples)
+
+```{r}
+gse <- getGEO("GSE52778")
+length(gse)
+```
+
+There is one object.
+Add sample name column in order to be able to link the info to that from SRA.
+
+```{r}
+pdata <- pData(gse[[1]])
+pdata$SampleName <- rownames(pdata)
+```
+
+## Get info on sequencing files
+
+Download SRA info. To link sample info to info sequencing: Go to corresponding SRA page and save the information via the "Send to: File button"
+This file can also be used to make a script to download sequencing files from the web.
+Note that sra files can be converted to fastq files via the fastq-dump function of the sra-tools.
+
+```{r}
+sraInfo <- read.csv("SraRunInfoAirway.csv")
+pdata <- merge(pdata, sraInfo, by = "SampleName")
+pdata$Run
+```
+
+The run is also the name of the SRA file so we will be able to link alignment file name to the experiment via the SRA file info.
+
+
+# Build index for Homo sapiens chromosome 1
+
+Download the Homo_sapiens.GRCh38.dna.chromosome.1.fa.gz from Ufora "Content".
+
+```{r}
+path <- "~/Downloads/airway/"
+sapiensGenome <- paste0(path, "Homo_sapiens.GRCh38.dna.chromosome.1.fa.gz")
+# system(paste0("mkdir ",path,"elegans_index")) # Made the folder ourselves. This command doesn't work on a Windows computer.
+indexName <- paste0(path, "sapiens_index/sapiens_index_GRCh38_rsubread")
+buildindex(basename = indexName, reference = sapiensGenome)
+```
+
+## set path to reads and output
+
+```{r}
+fastqDir  <- paste0(path,"fastQ")
+fls <- list.files(fastqDir, "fastq", full=TRUE)
+names(fls) <- sub("small.fastq.gz", "", basename(fls))
+bamDir <- paste0(path, "bamDir")  
+# system(paste0("mkdir ", bamDir)) # Made the folder ourselves. This command doesn't work on a Windows computer.
+bamfls <- paste0(bamDir,"/",names(fls),".bam")
+names(bamfls) <- names(fls)
+```
+
+## Readmapping
+
+The offset for the phred scores is 33 (Illumina 1.8). We find info on illumina encoding in quality control step of fastQC.
+
+```{r}
+phredOffset <- 33
+align(index = indexName,
+  readfile1 = fls,
+  input_format = "gzFASTQ",
+  output_format = "BAM",
+  output_file = bamfls,
+  phredOffset = phredOffset)
+```
+
+# CountTable
+
+```{r}
+fcAirway<-featureCounts(files = bamfls,
+  annot.ext = paste0(
+    path,
+    "Homo_sapiens.GRCh38.101.gtf.gz"),
+  isGTFAnnotationFile = TRUE,
+  GTF.featureType = "exon",
+  GTF.attrType = "gene_id",
+  useMetaFeatures = TRUE,
+  strandSpecific = 0,
+  isPairedEnd = TRUE) # We found on GEO: "The Illumina TruSeq assay was used to prepare 75bp paired-end libraries" 
+
+countTableAirway <- fcAirway$counts
+```
+
+We save the countTable for future use
+
+```{r}
+saveRDS(fcAirway, file = "fcAirway.rds")
+saveRDS(pdata, file = "airwayMetaData.rds")
+```
